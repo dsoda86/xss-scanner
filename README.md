@@ -19,7 +19,7 @@ Cross-Site Scripting (XSS) attacks are a type of injection, in which malicious s
 
 
 ## Languages & Technologies Used
-Python3, scanner, requests, BeautifulSoup
+
 ## Installation
 
 ## Usage
