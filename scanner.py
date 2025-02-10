@@ -1,12 +1,13 @@
-import requests
 import re
 import urllib.parse
+
+import requests
 from bs4 import BeautifulSoup
 
 print("All libraries are successfully imported!")
 
-class Scanner:
 
+class Scanner:
     def __init__(self, url, ignore_links):
         self.session = requests.Session()
         self.target_url = url
@@ -55,7 +56,10 @@ class Scanner:
                 link = link.split("#")[0]
 
             # Ensure we only crawl links from the same domain
-            if urllib.parse.urlparse(link).netloc == urllib.parse.urlparse(self.target_url).netloc:
+            if (
+                urllib.parse.urlparse(link).netloc
+                == urllib.parse.urlparse(self.target_url).netloc
+            ):
                 if link not in self.target_links and link not in self.links_to_ignore:
                     self.target_links.append(link)
                     print(f"Found: {link}")
@@ -64,32 +68,115 @@ class Scanner:
     def extract_forms(self, url):
         try:
             response = self.session.get(url, timeout=10)
-            response.raise_for_status() # Handles HTTP errors (e.g., 404, 500)
+            response.raise_for_status()  # Handles HTTP errors (e.g., 404, 500)
         except requests.RequestException as e:
             print(f"Error fetching {url}: {e}")
-            return[]
-        
-        parsed_html = BeautifulSoup(response.text, "html.parser") # Use text instead of content
-        return parsed_html.find_all("form") # `find_all` is preferred over `findAll`
+            return []
+
+        parsed_html = BeautifulSoup(response.text, "html.parser")
+        forms = parsed_html.find_all("form")  # store extracted forms
 
         extracted_forms = []  # Ensure this is reachable
 
-    for form in forms:
-        form_details = {
-            "action": form.get("action"),  
-            "method": form.get("method", "get").lower(),
-            "inputs": []
-        }
-
-        for input_tag in form.find_all("input"):  
-            input_details = {
-                "name": input_tag.get("name"),
-                "type": input_tag.get("type", "text"),  # Default type is text
-                "value": input_tag.get("value", "")
+        for form in forms:
+            form_details = {
+                "action": form.get("action"),
+                "method": form.get("method", "get").lower(),
+                "inputs": [],
             }
-            form_details["inputs"].append(input_details)
-        
-        extracted_forms.append(form_details)
 
-    return extracted_forms  # Ensure this is reachable
+            for input_tag in form.find_all("input"):
+                input_details = {
+                    "name": input_tag.get("name"),
+                    "type": input_tag.get("type", "text"),  # Default type is text
+                    "value": input_tag.get("value", ""),
+                }
+                form_details["inputs"].append(input_details)
 
+            extracted_forms.append(form_details)
+
+        return extracted_forms  # Ensure this is reachable
+
+    def submit_form(self, form, payload, url):
+        target_url = urllib.parse.urljoin(url, form.get("action"))
+        method = form.get("method", "get").lower()
+
+        form_data = {}
+        for input_tag in form.get("inputs", []):
+            input_name = input_tag.get("name")
+            if input_name:
+                form_data[input_name] = payload  # Inject payload into all form fields
+
+        try:
+            if method == "post":
+                return self.session.post(target_url, data=form_data, timeout=10)
+            else:
+                return self.session.get(target_url, params=form_data, timeout=10)
+        except requests.RequestException as e:
+            print(f"Error submitting form to {target_url}: {e}")
+            return None
+
+    def run_scanner(self):
+        if not self.target_links:
+            print("[-] No target links found. Have you run the crawler")
+            return
+
+        for link in self.target_links:
+            forms = self.extract_forms(link)
+            for form in forms:
+                print(f"[+] Testing in {link}")
+                is_vulnerable_to_xss = self.test_xss_in_form(form, link)
+
+                if is_vulnerable_to_xss:
+                    print("-" * 50)
+                    print(f"[*****] XSS discovered in {link} in the following form")
+                    print(form)
+                    print("-" * 50)
+
+                if "=" in link:  # Only test links with query parameters
+                    print(f"[+] Testing {link}")
+                    is_vulnerable_to_xss = self.test_xss_in_link(link)
+
+                    if is_vulnerable_to_xss:
+                        print("-" * 50)
+                        print(f"[*****] Discovered XSS in {link}")
+                        print(link)
+                        print("-" * 50)
+
+    def test_xss_in_link(self, url):
+        xss_test_script = "<sCript>alert('test')</scriPt>"
+
+        # Parse the URL and modify query parameters safely
+        parsed_url = urllib.parse.urlparse(url)
+        query_params = urllib.parse.parse_qs(parsed_url.query)
+
+        # Inject the payload into all parameters
+        modified_params = {key: xss_test_script for key in query_params}
+
+        # Reconstruct the URL with the payload
+        modified_query = urllib.parse.urlencode(modified_params, doseq=True)
+        modified_url = urllib.parse.urlunparse(
+            (
+                parsed_url.scheme,
+                parsed_url.netloc,
+                parsed_url.path,
+                parsed_url.params,
+                modified_query,
+                parsed_url.fragment,
+            )
+        )
+
+        # Send the request
+        response = self.session.get(modified_url)
+
+        # Check if the script appears in the response
+        return xss_test_script in response.text
+
+    def test_xss_in_form(self, form, url):
+        xss_test_script = "<sCript>alert('test')</scriPt>"
+
+        # Submit form with the XSS payload
+        response = self.submit_form(form, xss_test_script, url)
+
+        # Check if the script appears in the response
+        return xss_test_script in response.text
